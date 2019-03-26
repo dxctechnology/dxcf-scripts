@@ -1,0 +1,409 @@
+#!/bin/bash
+#
+# Configure OpenVPNAS
+#
+# Configuration Commands which are commented out indicate we're not currently overriding the default value
+#
+# Future Extensions:
+# - Create Schema Extensions to AD to store additional OpenVPN Group and User Parameters
+# - Instead of having separate group/user data files, run an LDAP query to pull the details we need for local OpenVPN
+#   configuration from LDAP, then iterate on the result to set the properties.
+
+#  1. Initalize Environment
+
+bindir=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+confdir=${bindir%/*}/conf
+
+standardgroupsdatfile=$confdir/standard-groups.dat
+customgroupsdatfile=$confdir/custom-groups.dat
+standardusersdatfile=$confdir/standard-users.dat
+customusersdatfile=$confdir/custom-users.dat
+
+logfile=/var/log/$(basename $0).log
+initial_echo=1  # Start cfn-init.log command output on new line
+
+interactive=1
+verbose=1
+auth=local
+host=$(hostname -s)
+domain=$(hostname -d)
+openvpn_user=openvpn
+unset openvpn_password
+ldap_server1=$(sed -n -e 's/^nameserver //p' /etc/resolv.conf | sed -n -e '1p')
+ldap_server2=$(sed -n -e 's/^nameserver //p' /etc/resolv.conf | sed -n -e '2p')
+ldap_bind_cn="OpenVPN Server"
+unset ldap_bind_password
+
+ldap_debug_level=10 # Normally 0
+ldap_trace_level=10 # Normally 0
+
+
+#  2. Define functions
+
+usage() {
+    echo "Usage: ${BASH_SOURCE##*/} [-n] [-v] [-a type]"
+    echo "                  [-h host] [-d domain]"
+    echo "                  [-u user] [-p password]"
+    echo "                  [-1 server] [-2 server]"
+    echo "                  [-B cn] [-P password]"
+    echo "  -n              non-interactive"
+    echo "  -v              verbose"
+    echo "  -a type         Authentication type (default: $auth)"
+    echo "  -h host         Host (default: $host)"
+    echo "  -d domain       Domain (default: $domain)"
+    echo "  -u user         OpenVPN Administrator User (default: $openvpn_user)"
+    echo "  -p password     OpenVPN Administrator Password (default: $openvpn_password)"
+    echo "  -1 server       Primary LDAP Server (default: $ldap_server1)"
+    echo "  -2 server       Backup LDAP Server (default: $ldap_server2)"
+    echo "  -B cn           LDAP Bind CN (default: $ldap_bind_cn)"
+    echo "  -P password     LDAP Bind Password (default: $ldap_bind_password)"
+}
+
+console() {
+    case $1 in
+      "error" | "ERROR" | 0) level=0; label="ERROR"; shift 1;;
+      "warn"  | "WARN"  | 1) level=1; label="WARN";  shift 1;;
+      "info"  | "INFO"  | 2) level=2; label="INFO";  shift 1;;
+      "debug" | "DEBUG" | 3) level=3; label="DEBUG"; shift 1;;
+                          *) level=2; label="INFO";;
+    esac
+
+    if [ $interactive = 1 ]; then
+        if [ $verbose -ge $level ]; then
+            echo "$*"
+        fi
+    else
+        [ $initial_echo = 1 ] && echo && initial_echo=0
+        # cfn-init.log format
+        echo "$(date +'%Y-%m-%d %H:%M:%S,%3N') [$label] $*"
+    fi
+}
+
+log() {
+    case $1 in
+      "error" | "ERROR" | 0) level=0; label="ERROR"; shift 1;;
+      "warn"  | "WARN"  | 1) level=1; label="WARN "; shift 1;;
+      "info"  | "INFO"  | 2) level=2; label="INFO "; shift 1;;
+      "debug" | "DEBUG" | 3) level=3; label="DEBUG"; shift 1;;
+                          *) level=2; label="INFO ";;
+    esac
+
+    # syslog format
+    echo "$(date +'%b %e %H:%M:%S') $this_host $(basename $0): $label $*" >> $logfile
+}
+
+ip2decimal() {
+    local a b c d ip=$@
+    IFS=. read -r a b c d <<< "$ip"
+    printf '%d\n' "$((a * 256 ** 3 + b * 256 ** 2 + c * 256 + d))"
+}
+
+
+#  3. Parse command line options
+
+# Lower ip is in Zone A, which should be primary server
+if [ $(ip2decimal $ldap_server1) -gt $(ip2decimal $ldap_server2) ]; then
+    t=$ldap_server1
+    ldap_server1=$ldap_server2
+    ldap_server2=$t
+fi
+
+while getopts nva:h:d:u:p:1:2:B:P:? arg; do
+    case $arg in
+    n)  interactive=0;;
+    v)  ((verbose++));;
+    a)  auth="$OPTARG";;
+    h)  host="$OPTARG";;
+    d)  domain="$OPTARG";;
+    u)  openvpn_user="$OPTARG";;
+    p)  openvpn_password="$OPTARG";;
+    1)  ldap_server1="$OPTARG";;
+    2)  ldap_server2="$OPTARG";;
+    B)  ldap_bind_cn="$OPTARG";;
+    P)  ldap_bind_password="$OPTARG";;
+    ?)  usage
+        exit 1;;
+    esac
+done
+
+
+#  4. Validate environment
+
+if [ -z $auth ]; then
+    console ERROR "-a type missing!"
+    console ERROR "Could not automatically determine authentication type, and it was not specified as a parameter"
+    exit 8
+else
+    case $auth in
+      local)
+        ;;
+      pam)
+        ;;
+      ldap)
+        ;;
+      *)
+        console ERROR "-a $type invalid! Must be local, pam or ldap"
+        exit 9;;
+    esac
+fi
+
+if [ -z $host ]; then
+    console ERROR "-h host missing!"
+    console ERROR "Could not automatically determine host, and it was not specified as a parameter"
+    exit 10
+fi
+
+if [ -z $domain ]; then
+    console ERROR "-d domain missing!"
+    console ERROR "Could not automatically determine domain, and it was not specified as a parameter"
+    exit 12
+fi
+
+if [ -z $openvpn_user ]; then
+    console ERROR "-u user missing!"
+    console ERROR "Could not automatically determine OpenVPN user, and it was not specified as a parameter"
+    exit 14
+else
+    case $openvpn_user in
+      openvpn)
+        ;;
+      *)
+        console ERROR "-u $openvpn_user invalid! Must be openvpn"
+        exit 15;;
+    esac
+fi
+
+if [ -z $openvpn_password ]; then
+    console ERROR "-p password missing!"
+    console ERROR "Could not automatically determine OpenVPN password, and it was not specified as a parameter"
+    exit 16
+fi
+
+if [ $auth = ldap ]; then
+    if [ -z $ldap_server1 ]; then
+        console ERROR "-1 server missing!"
+        console ERROR "Could not automatically determine LDAP server 1, and it was not specified as a parameter"
+        exit 20
+    fi
+
+    if [ -z $ldap_server2 ]; then
+        console ERROR "-2 server missing!"
+        console ERROR "Could not automatically determine LDAP server 2, and it was not specified as a parameter"
+        exit 22
+    fi
+
+    if [ -z $ldap_bind_cn ]; then
+        console ERROR "-B cn missing!"
+        console ERROR "Could not automatically determine LDAP bind CN, and it was not specified as a parameter"
+        exit 24
+    fi
+
+    if [ -z $ldap_bind_password ]; then
+        console ERROR "-P password missing!"
+        console ERROR "Could not automatically determine LDAP bind password, and it was not specified as a parameter"
+        exit 26
+    fi
+fi
+
+if [ ! -r $standardgroupsdatfile ]; then
+    console ERROR "Could not find Standard Groups Data File: $standardgroupsdatfile"
+    exit 30
+fi
+if [ ! -r $customgroupsdatfile ]; then
+    console WARN "Could not find Custom Groups Data File: $customgroupsdatfile"
+fi
+if [ ! -r $standardusersdatfile ]; then
+    console ERROR "Could not find Standard Users Data File: $standardusersdatfile"
+    exit 34
+fi
+if [ ! -r $customusersdatfile ]; then
+    console WARN "Could not find Custom Users Data File: $customusersdatfile"
+fi
+
+
+#  5. Main
+
+console "Setting '$openvpn_user' user password"
+echo "$openvpn_user:$openvpn_password" | chpasswd
+
+
+console "Configuring OpenVPNAS TLS Settings"
+/usr/local/openvpn_as/scripts/sacli --key "cs.tls_version_min" --value 1.2 ConfigPut
+/usr/local/openvpn_as/scripts/sacli --key "cs.tls_version_min_strict" --value true ConfigPut
+
+/usr/local/openvpn_as/scripts/sacli --key "vpn.client.tls_version_min" --value 1.2 ConfigPut
+/usr/local/openvpn_as/scripts/sacli --key "vpn.client.tls_version_min_strict" --value true ConfigPut
+
+/usr/local/openvpn_as/scripts/sacli --key "vpn.server.tls_version_min" --value 1.2 ConfigPut
+
+
+console "Configuring OpenVPNAS Network Settings"
+/usr/local/openvpn_as/scripts/sacli --key "host.name" --value "$host.$domain" ConfigPut
+
+
+console "Configuring OpenVPNAS VPN Settings"
+
+#/usr/local/openvpn_as/scripts/sacli --key "vpn.daemon.0.client.network" --value "172.27.224.0" ConfigPut
+#/usr/local/openvpn_as/scripts/sacli --key "vpn.daemon.0.client.netmask_bits" --value "20" ConfigPut
+
+#/usr/local/openvpn_as/scripts/sacli --key "vpn.server.static.0.network" --value "" ConfigPut
+#/usr/local/openvpn_as/scripts/sacli --key "vpn.server.static.0.netmask_bits" --value "" ConfigPut
+
+#/usr/local/openvpn_as/scripts/sacli --key "vpn.server.group_pool.0" --value "172.27.240.0/20" ConfigPut
+
+#/usr/local/openvpn_as/scripts/sacli --key "vpn.server.routing.private_network.0" --value "172.21.0.0/21" ConfigPut
+
+/usr/local/openvpn_as/scripts/sacli --key "vpn.client.routing.reroute_gw" --value false ConfigPut
+
+/usr/local/openvpn_as/scripts/sacli --key "vpn.client.routing.reroute_dns" --value true ConfigPut
+
+
+console "Configuring OpenVPNAS Advanced VPN Settings"
+/usr/local/openvpn_as/scripts/sacli --key "vpn.client.config_text" --value 'cipher AES-256-CBC' ConfigPut
+
+/usr/local/openvpn_as/scripts/sacli --key "vpn.server.config_text" --value 'cipher AES-256-CBC' ConfigPut
+
+
+console "Configuring OpenVPNAS Web Server Settings"
+# Currently none
+
+
+console "Configuring OpenVPNAS Client Settings"
+# Currently none
+
+
+console "Configuring OpenVPNAS Standard Groups"
+
+while IFS=: read -r group superuser; do
+    [ ${group:0:1} = \# ] && continue
+    console "- $group (Admin=$superuser)"
+    /usr/local/openvpn_as/scripts/sacli --user "$group" --key "type" --value "group" UserPropPut
+    /usr/local/openvpn_as/scripts/sacli --user "$group" --key "group_declare" --value "true" UserPropPut
+    if [ $superuser = true ]; then
+        /usr/local/openvpn_as/scripts/sacli --user "$group" --key "prop_superuser" --value "true" UserPropPut
+    fi
+done < $standardgroupsdatfile
+
+if [ -r $customgroupsdatfile ]; then
+    console "Configuring OpenVPNAS Custom Groups"
+
+    while IFS=: read -r group superuser; do
+        [ ${group:0:1} = \# ] && continue
+        console "- $group (Admin=$superuser)"
+        /usr/local/openvpn_as/scripts/sacli --user "$group" --key "type" --value "group" UserPropPut
+        /usr/local/openvpn_as/scripts/sacli --user "$group" --key "group_declare" --value "true" UserPropPut
+        if [ $superuser = true ]; then
+            /usr/local/openvpn_as/scripts/sacli --user "$group" --key "prop_superuser" --value "true" UserPropPut
+        fi
+    done < $customgroupsdatfile
+fi
+
+console "Configuring OpenVPNAS Standard Users"
+while IFS=: read -r user group pam_hash openvpn_hash; do
+    [ ${user:0:1} = \# ] && continue
+    console "- $user ($group)"
+    /usr/local/openvpn_as/scripts/sacli --user "$user" --key "type" --value "user_connect" UserPropPut
+    /usr/local/openvpn_as/scripts/sacli --user "$user" --key "conn_group" --value "$group" UserPropPut
+done < $standardusersdatfile
+
+if [ -r $customusersdatfile ]; then
+    console "Configuring OpenVPNAS Custom Users"
+
+    while IFS=: read -r user group pam_hash openvpn_hash; do
+        [ ${user:0:1} = \# ] && continue
+        console "- $user ($group)"
+        /usr/local/openvpn_as/scripts/sacli --user "$user" --key "type" --value "user_connect" UserPropPut
+        /usr/local/openvpn_as/scripts/sacli --user "$user" --key "conn_group" --value "$group" UserPropPut
+    done < $customusersdatfile
+fi
+
+case $auth in
+  local)
+    console "Configuring OpenVPNAS Local Authentication Settings"
+    /usr/local/openvpn_as/scripts/sacli --key "auth.module.type" --value "local" ConfigPut
+
+    console "Configuring OpenVPNAS Local Authentication Passwords for Standard Users"
+    while IFS=: read -r user group pam_hash openvpn_hash; do
+        [ ${user:0:1} = \# ] && continue
+        console "- $user"
+        /usr/local/openvpn_as/scripts/sacli --user "$user" --key "pvt_password_digest" --value "$openvpn_hash" UserPropPut
+    done < $standardusersdatfile
+
+    if [ -r $customusersdatfile ]; then
+        console "Configuring OpenVPNAS Local Authentication Passwords for Custom Users"
+
+        while IFS=: read -r user group pam_hash openvpn_hash; do
+            [ ${user:0:1} = \# ] && continue
+            console "- $user"
+            /usr/local/openvpn_as/scripts/sacli --user "$user" --key "pvt_password_digest" --value "$openvpn_hash" UserPropPut
+        done < $customusersdatfile
+    fi
+
+    /usr/local/openvpn_as/scripts/sacli --user "__DEFAULT__" --key "def_deny" --value "true" UserPropPut
+    ;;
+  pam)
+    console "Configuring OpenVPNAS PAM Authentication Settings"
+    /usr/local/openvpn_as/scripts/sacli --key "auth.module.type" --value "pam" ConfigPut
+
+    console "Configuring OpenVPNAS PAM Authentication Users and Passwords for Standard Users"
+    while IFS=: read -r user group pam_hash openvpn_hash; do
+        [ ${user:0:1} = \# ] && continue
+        id -u $user &> /dev/null && continue
+        console "- $user"
+        useradd -s /sbin/nologin $user
+        echo "$user:$pam_hash" | chpasswd -e
+    done < $standardusersdatfile
+
+    if [ -r $customusersdatfile ]; then
+        console "Configuring OpenVPNAS PAM Authentication Users and Passwords for Custom Users"
+
+        while IFS=: read -r user group pam_hash openvpn_hash; do
+            [ ${user:0:1} = \# ] && continue
+            id -u $user &> /dev/null && continue
+            console "- $user"
+            useradd -s /sbin/nologin $user
+        echo "$user:$pam_hash" | chpasswd -e
+        done < $customusersdatfile
+    fi
+
+    /usr/local/openvpn_as/scripts/sacli --user "__DEFAULT__" --key "def_deny" --value "true" UserPropPut
+    ;;
+  ldap)
+    console "Configuring OpenVPNAS LDAP Authentication Settings"
+    privatedomain=$(hostname -d)
+    basedn="DC=${privatedomain//./,DC=}"
+
+    /usr/local/openvpn_as/scripts/sacli --key "auth.module.type" --value "ldap" ConfigPut
+
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.name" --value "$privatedomain" ConfigPut
+    #V /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.name" --value "ActiveDirectory" ConfigPut
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.server.0.host" --value "$ldap_server1" ConfigPut
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.server.1.host" --value "$ldap_server2" ConfigPut
+    #V /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.server.0.host" --value "hlsuw2caddc01a.c.hlsb.dxcanalytics.com" ConfigPut
+    #V /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.server.1.host" --value "hlsuw2caddc01b.c.hlsb.dxcanalytics.com" ConfigPut
+
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.use_ssl" --value "never" ConfigPut
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.ssl_verify" --value "never" ConfigPut
+    #/usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.use_ssl" --value "always" ConfigPut
+    #/usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.ssl_verify" --value "allow" ConfigPut
+    #/usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.ssl_ca_cert" --value_file <FILE_NAME> ConfigPut
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.timeout" --value "4" ConfigPut
+
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.bind_dn" --value "CN=$ldap_bind_cn,CN=Users,$basedn" ConfigPut
+    #V /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.bind_dn" --value "CN=OpenVPN Server,CN=Users,$basedn" ConfigPut
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.bind_pw" --value "$ldap_password" ConfigPut
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.users_base_dn" --value "$basedn" ConfigPut
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.uname_attr" --value "sAMAccountName" ConfigPut
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.add_req" --value "memberOf=CN=OpenVPN Users,CN=Users,$basedn" ConfigPut
+
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.debug_level" --value "$ldap_debug_level" ConfigPut
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.openldap_trace_level" --value "$ldap_trace_level" ConfigPut
+
+    # Leave this at false if we want to let any LDAP user in the OpenVPN Users group connect
+    #/usr/local/openvpn_as/scripts/sacli --user "__DEFAULT__" --key "def_deny" --value "true" UserPropPut
+    ;;
+esac
+
+
+console "Starting OpenVPNAS"
+/usr/local/openvpn_as/scripts/sacli start
