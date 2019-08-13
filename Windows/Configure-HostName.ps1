@@ -39,6 +39,6 @@ Try {
 
     Rename-Computer -NewName $HostName -Restart
 }
-catch {
-    $_ | Send-QuickStartFailure
+Catch {
+    $_ | Send-CloudFormationFailure
 }
