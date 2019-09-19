@@ -24,6 +24,7 @@ initial_echo=1  # Start cfn-init.log command output on new line
 
 interactive=1
 verbose=1
+lock=0
 auth=local
 host=$(hostname -s)
 domain=$(hostname -d)
@@ -41,13 +42,14 @@ ldap_trace_level=10 # Normally 0
 #  2. Define functions
 
 usage() {
-    echo "Usage: ${BASH_SOURCE##*/} [-n] [-v] [-a type]"
+    echo "Usage: ${BASH_SOURCE##*/} [-n] [-v] [-l] [-a type]"
     echo "                  [-h host] [-d domain]"
     echo "                  [-u user] [-p password]"
     echo "                  [-1 server] [-2 server]"
     echo "                  [-B cn] [-P password]"
     echo "  -n              non-interactive"
     echo "  -v              verbose"
+    echo "  -l              lock OpenVPN Administrator User"
     echo "  -a type         Authentication type (default: $auth)"
     echo "  -h host         Host (default: $host)"
     echo "  -d domain       Domain (default: $domain)"
@@ -108,10 +110,11 @@ if [ $(ip2decimal $ldap_server1) -gt $(ip2decimal $ldap_server2) ]; then
     ldap_server2=$t
 fi
 
-while getopts nva:h:d:u:p:1:2:B:P:? arg; do
+while getopts nvla:h:d:u:p:1:2:B:P:? arg; do
     case $arg in
     n)  interactive=0;;
     v)  ((verbose++));;
+    l)  lock=1;;
     a)  auth="$OPTARG";;
     h)  host="$OPTARG";;
     d)  domain="$OPTARG";;
@@ -227,6 +230,12 @@ console "Setting '$openvpn_user' user password"
 echo "$openvpn_user:$openvpn_password" | chpasswd
 
 
+if [ $lock = 1 ]; then
+    console "Locking '$openvpn_user' user account"
+    passwd -l $openvpn_user
+fi
+
+
 console "Configuring OpenVPNAS TLS Settings"
 /usr/local/openvpn_as/scripts/sacli --key "cs.tls_version_min" --value 1.2 ConfigPut
 /usr/local/openvpn_as/scripts/sacli --key "cs.tls_version_min_strict" --value true ConfigPut
@@ -239,6 +248,8 @@ console "Configuring OpenVPNAS TLS Settings"
 
 console "Configuring OpenVPNAS Network Settings"
 /usr/local/openvpn_as/scripts/sacli --key "host.name" --value "$host.$domain" ConfigPut
+#/usr/local/openvpn_as/scripts/sacli --key "vpn.server.port_share.enable" --value "true" ConfigPut
+/usr/local/openvpn_as/scripts/sacli --key "vpn.server.port_share.service" --value "client" ConfigPut
 
 
 console "Configuring OpenVPNAS VPN Settings"

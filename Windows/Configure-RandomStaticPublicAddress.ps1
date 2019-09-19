@@ -88,5 +88,5 @@ Try {
     }
 }
 Catch {
-    $_ | Send-QuickStartFailure
+    $_ | Send-CloudFormationFailure
 }

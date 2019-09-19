@@ -35,5 +35,5 @@ Try {
     Write-CloudFormationHost "Conditional Forwarder created"
 }
 catch {
-    $_ | Send-QuickStartFailure
+    $_ | Send-CloudFormationFailure
 }
