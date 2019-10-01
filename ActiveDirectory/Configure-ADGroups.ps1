@@ -5,13 +5,16 @@
     Configure-Groups reads a CSV file containing Active Directory Groups to create a set of groups
     within the Users container in Active Directory. This command can create groups within the AWS
     Directory Service (which stores them in an OU), by specifying a Switch.
+.Parameter DomainName
+    Specifies the domain for the user account.
 .Parameter UserName
     Specifies a user account that has permission to add groups to the domain.
     The default is 'Admin'.
+.Parameter PasswordSecretId
+    Specifies the Id of a SecretsManager Secret containing the Password for the user account.
 .Parameter Password
     Specifies the password for the user account.
-.Parameter DomainName
-    Specifies the domain for the user account.
+    Avoid using this method if possible - it's more secure to have SecretsManager create and store the password.
 .Parameter GroupsPath
     Specifies the path to the Groups input CSV file.
     The default value is '.\Groups.csv'.
@@ -19,31 +22,40 @@
     Indicates use of the AWS DirectoryService.
     This creates Groups in the correct OU.
 .Example
-    Configure-Groups -UserName Admin -Password <Password> -DomainName <Domain>
-    Creates Groups using the default ./Groups.csv file.
+    Configure-Groups -DomainName m1.dxc-ap.com `
+                     -UserName Admin -PasswordSecretId Production-DirectoryService-AdminPassword
+    Creates Groups using the default ./Groups.csv file using a password stored in SecretsManager.
 .Example
-    Configure-Groups -UserName Admin -Password <Password> -DomainName <Domain> -GroupsPath 'C:\cfn\temp\CustomGroups.csv'
-    Creates Groups using a custom CSV file.
+    Configure-Groups -DomainName m1.dxc-ap.com `
+                     -UserName Admin -Password <Password> `
+                     -GroupsPath 'C:\cfn\temp\CustomGroups.csv'
+    Creates Groups using a custom CSV file using an explicitly passed password.
 .Example
-    Configure-Groups -UserName Admin -Password <Password> -DomainName <Domain> -GroupsPath 'C:\cfn\temp\CustomGroups.csv' -DirectoryService
-    Creates Groups using a custom CSV file in the OU required by the AWS DirectoryService.
+    Configure-Groups -DomainName m1.dxc-ap.com `
+                     -UserName Admin -PasswordSecretId Production-DirectoryService-AdminPassword `
+                     -GroupsPath 'C:\cfn\temp\CustomGroups.csv' `
+                     -DirectoryService
+    Creates Groups using a custom CSV file in the OU required by the AWS DirectoryService using a password stored in SecretsManager.
 .Notes
        Author: Michael Crawford
-    Copyright: 2018 by DXC.technology
+    Copyright: 2019 by DXC.technology
              : Permission to use is granted but attribution is appreciated
 
 This command assumes it will be run on a computer joined to the domain.
 #>
 [CmdletBinding()]
 Param (
+    [Parameter(Mandatory=$true)]
+    [string]$DomainName,
+
     [Parameter(Mandatory=$false)]
     [string]$UserName = "Admin",
 
-    [Parameter(Mandatory=$true)]
-    [string]$Password,
+    [Parameter(Mandatory=$false)]
+    [string]$PasswordSecretId = "",
 
-    [Parameter(Mandatory=$true)]
-    [string]$DomainName,
+    [Parameter(Mandatory=$false)]
+    [string]$Password = "",
 
     [Parameter(Mandatory=$false)]
     [string]$GroupsPath = ".\Groups.csv",
@@ -52,6 +64,16 @@ Param (
 )
 
 Try {
+    $ErrorActionPreference = "Stop"
+
+    If ($PasswordSecretId) {
+      $Password = Get-SECSecretValue -SecretId $PasswordSecretId | Select -ExpandProperty SecretString
+    }
+
+    If (-Not $Password) {
+      Throw "Password not found"
+    }
+
     $SecurePassword = ConvertTo-SecureString -String "$Password" -AsPlainText -Force
     $Credential = New-Object System.Management.Automation.PSCredential("$UserName@$DomainName", $SecurePassword)
 

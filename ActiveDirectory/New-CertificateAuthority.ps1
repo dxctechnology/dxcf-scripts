@@ -3,13 +3,16 @@
     Installs and Configures a Certificate Authority.
 .Description
     New-CertificateAuthority installs and configures a new Root Certificate Authority.
+.Parameter DomainName
+    Specifies the domain for the user account.
 .Parameter UserName
     Specifies a user account that has permission to create the Certificate Authority.
     The default is 'Admin'.
+.Parameter PasswordSecretId
+    Specifies the Id of a SecretsManager Secret containing the Password for the user account.
 .Parameter Password
     Specifies the password for the user account.
-.Parameter DomainName
-    Specifies the domain for the user account.
+    Avoid using this method if possible - it's more secure to have SecretsManager create and store the password.
 .Notes
     Requires xAdcsDeployment DSC Resource:
 
@@ -18,81 +21,98 @@
 #>
 [CmdletBinding()]
 Param(
+    [Parameter(Mandatory=$true)]
+    [string]$DomainName,
+
     [Parameter(Mandatory=$false)]
-    [string]$UserName = 'Admin',
+    [string]$UserName = "Admin",
 
-    [Parameter(Mandatory=$true)]
-    [string]$Password,
+    [Parameter(Mandatory=$false)]
+    [string]$PasswordSecretId = "",
 
-    [Parameter(Mandatory=$true)]
-    [string]$DomainName
+    [Parameter(Mandatory=$false)]
+    [string]$Password = ""
 )
 
-<#
-#>
+Try {
+    $ErrorActionPreference = "Stop"
 
-Write-Host
-Write-CloudFormationHost "Configuring Certificate Authority"
+    If ($PasswordSecretId) {
+      $Password = Get-SECSecretValue -SecretId $PasswordSecretId | Select -ExpandProperty SecretString
+    }
 
-$SecurePassword = ConvertTo-SecureString "$Password" -AsPlainText -Force
-$Credential = New-Object System.Management.Automation.PSCredential("$UserName@$DomainName", $SecurePassword)
+    If (-Not $Password) {
+      Throw "Password not found"
+    }
 
-$ConfigurationData = @{
-    AllNodes = @(
-        @{
-            NodeName = $env:COMPUTERNAME
-            PSDscAllowPlainTextPassword = $true
-        }
-    )
-}
+    $SecurePassword = ConvertTo-SecureString "$Password" -AsPlainText -Force
+    $Credential = New-Object System.Management.Automation.PSCredential("$UserName@$DomainName", $SecurePassword)
 
-Configuration CertificateAuthority {
-    Import-DscResource -ModuleName xAdcsDeployment
+    $ConfigurationData = @{
+        AllNodes = @(
+            @{
+                NodeName = $env:COMPUTERNAME
+                PSDscAllowPlainTextPassword = $true
+            }
+        )
+    }
 
-    Node $AllNodes.NodeName
-    {
-        WindowsFeature ADCS-Cert-Authority
+    Write-Host
+    Write-CloudFormationHost "Configuring Certificate Authority"
+
+    Configuration CertificateAuthority {
+        Import-DscResource -ModuleName xAdcsDeployment
+
+        Node $AllNodes.NodeName
         {
-               Ensure = 'Present'
-               Name = 'ADCS-Cert-Authority'
-        }
-        xADCSCertificationAuthority ADCS
-        {
-            Ensure = 'Present'
-            Credential = $Credential
-            CAType = 'EnterpriseRootCA'
-            DependsOn = '[WindowsFeature]ADCS-Cert-Authority'
-        }
-        WindowsFeature ADCS-Web-Enrollment
-        {
-            Ensure = 'Present'
-            Name = 'ADCS-Web-Enrollment'
-            DependsOn = '[WindowsFeature]ADCS-Cert-Authority'
-        }
-        WindowsFeature RSAT-ADCS
-        {
-            Ensure = 'Present'
-            Name = 'RSAT-ADCS'
-            DependsOn = '[WindowsFeature]ADCS-Cert-Authority'
-        }
-        WindowsFeature RSAT-ADCS-Mgmt
-        {
-            Ensure = 'Present'
-            Name = 'RSAT-ADCS-Mgmt'
-            DependsOn = '[WindowsFeature]ADCS-Cert-Authority'
-        }
-        xADCSWebEnrollment CertSrv
-        {
-            Ensure = 'Present'
-            Name = 'CertSrv'
-            Credential = $Credential
-            DependsOn = '[WindowsFeature]ADCS-Web-Enrollment','[xADCSCertificationAuthority]ADCS'
+            WindowsFeature ADCS-Cert-Authority
+            {
+                   Ensure = 'Present'
+                   Name = 'ADCS-Cert-Authority'
+            }
+            xADCSCertificationAuthority ADCS
+            {
+                Ensure = 'Present'
+                Credential = $Credential
+                CAType = 'EnterpriseRootCA'
+                DependsOn = '[WindowsFeature]ADCS-Cert-Authority'
+            }
+            WindowsFeature ADCS-Web-Enrollment
+            {
+                Ensure = 'Present'
+                Name = 'ADCS-Web-Enrollment'
+                DependsOn = '[WindowsFeature]ADCS-Cert-Authority'
+            }
+            WindowsFeature RSAT-ADCS
+            {
+                Ensure = 'Present'
+                Name = 'RSAT-ADCS'
+                DependsOn = '[WindowsFeature]ADCS-Cert-Authority'
+            }
+            WindowsFeature RSAT-ADCS-Mgmt
+            {
+                Ensure = 'Present'
+                Name = 'RSAT-ADCS-Mgmt'
+                DependsOn = '[WindowsFeature]ADCS-Cert-Authority'
+            }
+            xADCSWebEnrollment CertSrv
+            {
+                Ensure = 'Present'
+                Name = 'CertSrv'
+                Credential = $Credential
+                DependsOn = '[WindowsFeature]ADCS-Web-Enrollment','[xADCSCertificationAuthority]ADCS'
+            }
         }
     }
+
+    CertificateAuthority -ConfigurationData $ConfigurationData
+    Start-DscConfiguration -Path .\CertificateAuthority -Wait -Verbose -Force
+    Get-ChildItem .\CertificateAuthority *.mof -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false -ErrorAction SilentlyContinue
+
+    Get-ChildItem C:\Windows\system32\CertSrv\CertEnroll *.crt | Copy-Item -Destination c:\inetpub\wwwroot\cert.crt
+}
+Catch {
+    $_ | Send-CloudFormationFailure
 }
 
-CertificateAuthority -ConfigurationData $ConfigurationData
-Start-DscConfiguration -Path .\CertificateAuthority -Wait -Verbose -Force
-Get-ChildItem .\CertificateAuthority *.mof -ErrorAction SilentlyContinue | Remove-Item -Confirm:$false -ErrorAction SilentlyContinue
-
-Get-ChildItem C:\Windows\system32\CertSrv\CertEnroll *.crt | Copy-Item -Destination c:\inetpub\wwwroot\cert.crt
+Start-Sleep 1

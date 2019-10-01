@@ -10,13 +10,14 @@ Param (
     [string]$GroupName,
 
     [Parameter(Mandatory=$false)]
-    [string]$KeyLength='2048',
+    [string]$KeyLength="2048",
 
     [switch]$FedRAMP
 )
 
 Try {
     $ErrorActionPreference = "Stop"
+
     $Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
 
     Write-Host
