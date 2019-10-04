@@ -18,9 +18,9 @@ zone=$(curl -s -m 60 http://169.254.169.254/latest/meta-data/placement/availabil
 region=${zone:: -1}
 zonecode=${zone: -1}
 
-standardgroupsdatfile=$confdir/standard-groups.dat
+groupsdatfile=$confdir/groups.dat
 customgroupsdatfile=$confdir/custom-groups.dat
-standardusersdatfile=$confdir/standard-users.dat
+usersdatfile=$confdir/users.dat
 customusersdatfile=$confdir/custom-users.dat
 
 logfile=/var/log/$(basename $0).log
@@ -218,15 +218,15 @@ if [ $auth = ldap ]; then
     fi
 fi
 
-if [ ! -r $standardgroupsdatfile ]; then
-    console ERROR "Could not find Standard Groups Data File: $standardgroupsdatfile"
+if [ ! -r $groupsdatfile ]; then
+    console ERROR "Could not find Groups Data File: $groupsdatfile"
     exit 30
 fi
 if [ ! -r $customgroupsdatfile ]; then
     console WARN "Could not find Custom Groups Data File: $customgroupsdatfile"
 fi
-if [ ! -r $standardusersdatfile ]; then
-    console ERROR "Could not find Standard Users Data File: $standardusersdatfile"
+if [ ! -r $usersdatfile ]; then
+    console ERROR "Could not find Users Data File: $usersdatfile"
     exit 34
 fi
 if [ ! -r $customusersdatfile ]; then
@@ -310,7 +310,7 @@ console "Configuring OpenVPNAS Client Settings"
 # Currently none
 
 
-console "Configuring OpenVPNAS Standard Groups"
+console "Configuring OpenVPNAS Groups"
 
 while IFS=: read -r group superuser; do
     [ ${group:0:1} = \# ] && continue
@@ -320,7 +320,7 @@ while IFS=: read -r group superuser; do
     if [ $superuser = true ]; then
         /usr/local/openvpn_as/scripts/sacli --user "$group" --key "prop_superuser" --value "true" UserPropPut
     fi
-done < $standardgroupsdatfile
+done < $groupsdatfile
 
 if [ -r $customgroupsdatfile ]; then
     console "Configuring OpenVPNAS Custom Groups"
@@ -336,13 +336,13 @@ if [ -r $customgroupsdatfile ]; then
     done < $customgroupsdatfile
 fi
 
-console "Configuring OpenVPNAS Standard Users"
+console "Configuring OpenVPNAS Users"
 while IFS=: read -r user group pam_hash openvpn_hash; do
     [ ${user:0:1} = \# ] && continue
     console "- $user ($group)"
     /usr/local/openvpn_as/scripts/sacli --user "$user" --key "type" --value "user_connect" UserPropPut
     /usr/local/openvpn_as/scripts/sacli --user "$user" --key "conn_group" --value "$group" UserPropPut
-done < $standardusersdatfile
+done < $usersdatfile
 
 if [ -r $customusersdatfile ]; then
     console "Configuring OpenVPNAS Custom Users"
@@ -360,12 +360,12 @@ case $auth in
     console "Configuring OpenVPNAS Local Authentication Settings"
     /usr/local/openvpn_as/scripts/sacli --key "auth.module.type" --value "local" ConfigPut
 
-    console "Configuring OpenVPNAS Local Authentication Passwords for Standard Users"
+    console "Configuring OpenVPNAS Local Authentication Passwords for Users"
     while IFS=: read -r user group pam_hash openvpn_hash; do
         [ ${user:0:1} = \# ] && continue
         console "- $user"
         /usr/local/openvpn_as/scripts/sacli --user "$user" --key "pvt_password_digest" --value "$openvpn_hash" UserPropPut
-    done < $standardusersdatfile
+    done < $usersdatfile
 
     if [ -r $customusersdatfile ]; then
         console "Configuring OpenVPNAS Local Authentication Passwords for Custom Users"
@@ -383,14 +383,14 @@ case $auth in
     console "Configuring OpenVPNAS PAM Authentication Settings"
     /usr/local/openvpn_as/scripts/sacli --key "auth.module.type" --value "pam" ConfigPut
 
-    console "Configuring OpenVPNAS PAM Authentication Users and Passwords for Standard Users"
+    console "Configuring OpenVPNAS PAM Authentication Users and Passwords for Users"
     while IFS=: read -r user group pam_hash openvpn_hash; do
         [ ${user:0:1} = \# ] && continue
         id -u $user &> /dev/null && continue
         console "- $user"
         useradd -s /sbin/nologin $user
         echo "$user:$pam_hash" | chpasswd -e
-    done < $standardusersdatfile
+    done < $usersdatfile
 
     if [ -r $customusersdatfile ]; then
         console "Configuring OpenVPNAS PAM Authentication Users and Passwords for Custom Users"
