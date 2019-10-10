@@ -80,6 +80,8 @@ Param (
 Try {
     $ErrorActionPreference = "Stop"
 
+    $MaxFailedUsers = 4
+
     If ($PasswordSecretId) {
       $Password = Get-SECSecretValue -SecretId $PasswordSecretId | Select -ExpandProperty SecretString
     }
@@ -155,23 +157,31 @@ Try {
                            -Credential $Credential
                 Write-CloudFormationHost "User $($User.Name) created"
             }
+
+            if ($($User.Groups)) {
+                $UserGroups = ($User.Groups).split(',')
+                ForEach ($UserGroup in $UserGroups) {
+                    Try {
+                        Add-ADGroupMember -Identity "$UserGroup" `
+                                          -Members "$($User.SamAccountName)" `
+                                          -Credential $Credential
+                        Write-CloudFormationHost "User $($User.Name) added to Group $UserGroup"
+                    }
+                    Catch {
+                        Write-CloudFormationWarning "User $($User.Name) could not be added to Group $UserGroup, Error: $($_.Exception.Message)"
+                    }
+                }
+            }
         }
         Catch {
-            Write-CloudFormationWarning "User $($User.Name) could not be created, Error: $($_.Exception.Message)"
-        }
-
-        if ($($User.Groups)) {
-            $UserGroups = ($User.Groups).split(',')
-            ForEach ($UserGroup in $UserGroups) {
-                Try {
-                    Add-ADGroupMember -Identity "$UserGroup" `
-                                      -Members "$($User.SamAccountName)" `
-                                      -Credential $Credential
-                    Write-CloudFormationHost "User $($User.Name) added to Group $UserGroup"
+            If ($_.Exception.Message -Eq "Padding is invalid and cannot be removed.") {
+                Write-CloudFormationWarning "User $($User.Name) could not be created, Error: Encrypted password could not be decrypted with the EncryptionKey."
+                If (++$FailedUsers -gt $MaxFailedUsers) {
+                    Throw "More than $MaxFailedUsers Users could not be created because their encrypted passwords could not be decrypted with the EncryptionKey."
                 }
-                Catch {
-                    Write-CloudFormationWarning "User $($User.Name) could not be added to Group $UserGroup, Error: $($_.Exception.Message)"
-                }
+            }
+            Else {
+                Write-CloudFormationWarning "User $($User.Name) could not be created, Error: $($_.Exception.Message)"
             }
         }
     }
