@@ -37,7 +37,10 @@ Try {
     Write-Host
     Write-CloudFormationHost "Renaming Computer to $HostName"
 
-    Rename-Computer -NewName $HostName -Restart
+    Rename-Computer -NewName $HostName
+    Write-CloudFormationHost "Computer renamed to $HostName, restarting..."
+
+    Restart-Computer
 }
 Catch {
     $_ | Send-CloudFormationFailure

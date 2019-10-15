@@ -6,13 +6,21 @@
     within the Users container in Active Directory. This command can create groups within the AWS
     Directory Service (which stores them in an OU), by specifying a Switch.
     Users can optionally be added to additional groups.
-.Parameter UserName
-    Specifies a user account that has permission to add groups to the domain.
-    The default is 'Admin'.
-.Parameter Password
-    Specifies the password for the user account.
 .Parameter DomainName
     Specifies the domain for the user account.
+.Parameter UserName
+    Specifies a user account that has permission to add users to the domain.
+    The default is 'Admin'.
+.Parameter PasswordSecretId
+    Specifies the Id of a SecretsManager Secret containing the Password for the user account.
+.Parameter Password
+    Specifies the password for the user account.
+    Avoid using this method if possible - it's more secure to have SecretsManager create and store the password.
+.Parameter EncryptionKeySecretId
+    Specifies the Id of a SecretsManager Secret containing the encryption key used to encrypt user passwords in the CSV file.
+.Parameter EncryptionKey
+    Specifies the encryption key used to encrypt user passwords in the CSV file.
+    Avoid using this method if possible - it's more secure to have SecretsManager store the encryption key.
 .Parameter UsersPath
     Specifies the path to the Users input CSV file.
     The default value is '.\Users.csv'.
@@ -20,31 +28,48 @@
     Indicates use of the AWS DirectoryService.
     This creates Users in the correct OU.
 .Example
-    Configure-Users -UserName Admin -Password <Password> -DomainName <Domain>
-    Creates Users using the default ./Users.csv file.
+    Configure-Users -DomainName m1.dxc-ap.com `
+                    -PasswordSecretId Production-DirectoryService-AdminPassword `
+                    -EncryptionKeySecretId Production-DirectoryService-EncryptionKey
+    Creates Users using the default ./Users.csv file using a password stored in SecretsManager.
 .Example
-    Configure-Users -UserName Admin -Password <Password> -DomainName <Domain> -UsersPath 'C:\cfn\temp\CustomUsers.csv'
-    Creates Users using a custom CSV file.
+    Configure-Users -DomainName m1.dxc-ap.com `
+                    -UserName Admin -Password <Password> -EncryptionKey <Key> `
+                    -UsersPath 'C:\cfn\temp\CustomUsers.csv'
+    Creates Users using a custom CSV file using an explicitly passed password.
 .Example
-    Configure-Users -UserName Admin -Password <Password> -DomainName <Domain> -UsersPath 'C:\cfn\temp\CustomUsers.csv' -DirectoryService
-    Creates Users using a custom CSV file in the OU required by the AWS DirectoryService.
+    Configure-Users -DomainName m1.dxc-ap.com `
+                    -PasswordSecretId Production-DirectoryService-AdminPassword `
+                    -EncryptionKeySecretId Production-DirectoryService-EncryptionKey `
+                    -UsersPath 'C:\cfn\temp\CustomUsers.csv' `
+                    -DirectoryService
+    Creates Users using a custom CSV file in the OU required by the AWS DirectoryService using a password stored in SecretsManager.
 .Notes
        Author: Michael Crawford
-    Copyright: 2018 by DXC.technology
+    Copyright: 2019 by DXC.technology
              : Permission to use is granted but attribution is appreciated
 
     This command assumes it will be run on a computer joined to the domain.
 #>
 [CmdletBinding()]
 Param (
+    [Parameter(Mandatory=$true)]
+    [string]$DomainName,
+
     [Parameter(Mandatory=$false)]
     [string]$UserName = "Admin",
 
-    [Parameter(Mandatory=$true)]
-    [string]$Password,
+    [Parameter(Mandatory=$false)]
+    [string]$PasswordSecretId = "",
 
-    [Parameter(Mandatory=$true)]
-    [string]$DomainName,
+    [Parameter(Mandatory=$false)]
+    [string]$Password = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$EncryptionKeySecretId = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$EncryptionKey = "",
 
     [Parameter(Mandatory=$false)]
     [string]$UsersPath = ".\Users.csv",
@@ -53,12 +78,37 @@ Param (
 )
 
 Try {
+    $ErrorActionPreference = "Stop"
+
+    $MaxFailedUsers = 4
+
+    If ($PasswordSecretId) {
+      $Password = Get-SECSecretValue -SecretId $PasswordSecretId | Select -ExpandProperty SecretString
+    }
+
+    If (-Not $Password) {
+      Throw "Password not found"
+    }
+
     $SecurePassword = ConvertTo-SecureString -String "$Password" -AsPlainText -Force
     $Credential = New-Object System.Management.Automation.PSCredential("$UserName@$DomainName", $SecurePassword)
 
-    # We use the Password of the Domain Administrator to Encrypt Stored User Initial Passwords
+    If ($EncryptionKeySecretId) {
+      $EncryptionKey = Get-SECSecretValue -SecretId $EncryptionKeySecretId | Select -ExpandProperty SecretString
+    }
+
+    If (-Not $EncryptionKey) {
+      Throw "Encryption Key not found"
+    }
+
+    # Note: Versions of this script prior to the addition of logic to use SecretsManager used the Password
+    #       as the EncryptionKey, so only one known value would have to be passed.
+    #       With SecretsManager, we are having that service generate a random string for the Admin user,
+    #       so to preserve the ability to pre-encrypt user passwords we had to split up this dual function,
+    #       and pass an EncryptionKey which can be known in advance, so we can decrypt the user password
+    #       values consistently.
     $Encoder = [System.Text.Encoding]::UTF8
-    $Key = $Encoder.GetBytes($Password.PadRight(24))
+    $Key = $Encoder.GetBytes($EncryptionKey.PadRight(24))
 
     $DistinguishedName = (Get-ADDomain -Current LocalComputer -Credential $Credential).DistinguishedName
     $DNSRoot = (Get-ADDomain -Current LocalComputer -Credential $Credential).DNSRoot
@@ -107,23 +157,31 @@ Try {
                            -Credential $Credential
                 Write-CloudFormationHost "User $($User.Name) created"
             }
+
+            if ($($User.Groups)) {
+                $UserGroups = ($User.Groups).split(',')
+                ForEach ($UserGroup in $UserGroups) {
+                    Try {
+                        Add-ADGroupMember -Identity "$UserGroup" `
+                                          -Members "$($User.SamAccountName)" `
+                                          -Credential $Credential
+                        Write-CloudFormationHost "User $($User.Name) added to Group $UserGroup"
+                    }
+                    Catch {
+                        Write-CloudFormationWarning "User $($User.Name) could not be added to Group $UserGroup, Error: $($_.Exception.Message)"
+                    }
+                }
+            }
         }
         Catch {
-            Write-CloudFormationWarning "User $($User.Name) could not be created, Error: $($_.Exception.Message)"
-        }
-
-        if ($($User.Groups)) {
-            $UserGroups = ($User.Groups).split(',')
-            ForEach ($UserGroup in $UserGroups) {
-                Try {
-                    Add-ADGroupMember -Identity "$UserGroup" `
-                                      -Members "$($User.SamAccountName)" `
-                                      -Credential $Credential
-                    Write-CloudFormationHost "User $($User.Name) added to Group $UserGroup"
+            If ($_.Exception.Message -Eq "Padding is invalid and cannot be removed.") {
+                Write-CloudFormationWarning "User $($User.Name) could not be created, Error: Encrypted password could not be decrypted with the EncryptionKey."
+                If (++$FailedUsers -gt $MaxFailedUsers) {
+                    Throw "More than $MaxFailedUsers Users could not be created because their encrypted passwords could not be decrypted with the EncryptionKey."
                 }
-                Catch {
-                    Write-CloudFormationWarning "User $($User.Name) could not be added to Group $UserGroup, Error: $($_.Exception.Message)"
-                }
+            }
+            Else {
+                Write-CloudFormationWarning "User $($User.Name) could not be created, Error: $($_.Exception.Message)"
             }
         }
     }

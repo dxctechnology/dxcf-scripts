@@ -1,3 +1,15 @@
+<#
+.Synopsis
+    Assigns a Static Public IP (EIP) from a list of EIPs.
+.Description
+    Configure-RandomStaticPublicAddress associates an EIP from a list of provided EIPs to an Instance.
+.Parameter EIPs
+    Specifies an array of EIPs which can be associated with the Instance.
+.Notes
+       Author: Michael Crawford
+    Copyright: 2018 by DXC.technology
+             : Permission to use is granted but attribution is appreciated
+#>
 [CmdletBinding()]
 Param (
     [Parameter(Mandatory=$true)]
