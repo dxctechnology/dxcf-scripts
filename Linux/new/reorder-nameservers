@@ -1,0 +1,28 @@
+#!/bin/bash
+# Re-order nameservers based on availablity
+
+nameservers=$(sed -n -e 's/^nameserver //p' /etc/resolv.conf)
+
+sed -e '/^nameserver /d' /etc/resolv.conf > /etc/resolv.conf.new
+
+unset non_responding_nameservers
+for nameserver in $nameservers; do
+    timeout 1s dig @$nameserver s3.amazonaws.com &> /dev/null
+    if [ $? = 124 ];  then
+        non_responding_nameservers+=" $nameserver"
+    else
+        echo "nameserver $nameserver" >> /etc/resolv.conf.new
+    fi
+done
+if [ -n $non_responding_nameservers ]; then
+    for nameserver in $non_responding_nameservers; do
+        echo "nameserver $nameserver" >> /etc/resolv.conf.new
+    done
+fi
+if ! cmp -s /etc/resolv.conf /etc/resolv.conf.new; then
+    echo "re-ordering nameservers"
+    cp /etc/resolv.conf /etc/resolv.conf.orig
+    mv /etc/resolv.conf.new /etc/resolv.conf
+else
+    rm -f /etc/resolv.conf.new
+fi
