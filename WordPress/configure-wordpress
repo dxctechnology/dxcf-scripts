@@ -119,7 +119,7 @@ done
 
 #  4. Validate environment
 
-if [ -z $wordpress_title ]; then
+if [ -z "$wordpress_title" ]; then
     console ERROR "-t title missing!"
     console ERROR "Could not automatically determine title, and it was not specified as a parameter"
     exit 10
@@ -137,6 +137,12 @@ fi
 #    console ERROR "WordPress Administrator Secret or both WordPress Administrator User and Password are required"
 #    exit 24
 #fi
+
+if [ -z $wordpress_email ]; then
+    console ERROR "-e email missing!"
+    console ERROR "Could not automatically determine Administrator Email, and it was not specified as a parameter"
+    exit 26
+fi
 
 if [ -z $wordpress_db_host ]; then
     console ERROR "-H host missing!"
@@ -169,10 +175,10 @@ if [ ! -z $wordpress_secret ]; then
   RC=$?
 
   if [ $RC = 0 ]; then
-    console "Obtained '$wordpress_secret' secret successfully"
+      console "Obtained '$wordpress_secret' secret successfully"
   else
-    console "Could not obtain '$wordpress_secret' secret! Error: $RC"
-    exit 90
+      console ERROR "Could not obtain '$wordpress_secret' secret! Error: $RC"
+      exit 90
   fi
   wordpress_user=$(echo $wordpress_secret_string | sed -n -e 's/^.*"username":"\([a-zA-Z0-9]*\)".*$/\1/p')
   wordpress_password=$(echo $wordpress_secret_string | sed -n -e 's/^.*"password":"\([a-zA-Z0-9]*\)".*$/\1/p')
@@ -187,10 +193,10 @@ if [ ! -z $wordpress_db_secret ]; then
   RC=$?
 
   if [ $RC = 0 ]; then
-    console "Obtained '$wordpress_db_secret' secret successfully"
+      console "Obtained '$wordpress_db_secret' secret successfully"
   else
-    console "Could not obtain '$wordpress_db_secret' secret! Error: $RC"
-    exit 92
+      console ERROR "Could not obtain '$wordpress_db_secret' secret! Error: $RC"
+      exit 92
   fi
   wordpress_db_user=$(echo $wordpress_db_secret_string | sed -n -e 's/^.*"username":"\([a-zA-Z0-9]*\)".*$/\1/p')
   wordpress_db_password=$(echo $wordpress_db_secret_string | sed -n -e 's/^.*"password":"\([a-zA-Z0-9]*\)".*$/\1/p')
