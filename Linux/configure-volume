@@ -3,7 +3,7 @@
 # Configure Volume
 #
 
-#  1. Initalize Environment
+#  1. Initialize Environment
 
 logfile=/var/log/$(basename $0).log
 initial_echo=1  # Start cfn-init.log command output on new line
@@ -26,7 +26,7 @@ usage() {
     echo "  -c              clear existing files below mountpoint"
     echo "  -p              preserve existing files below mountpoint and move to new disk"
     echo "  -d device       Device"
-    echo "  -m mountpoint   Domain"
+    echo "  -m mountpoint   Mount Point"
 }
 
 console() {

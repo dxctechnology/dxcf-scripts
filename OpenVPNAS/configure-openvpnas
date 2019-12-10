@@ -30,16 +30,15 @@ interactive=1
 verbose=1
 lock=0
 auth=local
-host=$(hostname -s)
-domain=$(hostname -d)
+host=$(hostname)
+unset openvpn_secret
 openvpn_user=openvpn
 unset openvpn_password
-unset openvpn_password_secret
 ldap_server1=$(sed -n -e 's/^nameserver //p' /etc/resolv.conf | sed -n -e '1p')
 ldap_server2=$(sed -n -e 's/^nameserver //p' /etc/resolv.conf | sed -n -e '2p')
+unset ldap_bind_secret
 ldap_bind_cn="OpenVPN Server"
 unset ldap_bind_password
-unset ldap_bind_password_secret
 
 ldap_debug_level=10 # Normally 0
 ldap_trace_level=10 # Normally 0
@@ -49,24 +48,23 @@ ldap_trace_level=10 # Normally 0
 
 usage() {
     echo "Usage: ${BASH_SOURCE##*/} [-n] [-v] [-l] [-a type]"
-    echo "                  [-h host] [-d domain]"
-    echo "                  [-u user] [-p password] [-s secret]"
+    echo "                  [-h host]"
+    echo "                  [-s secret] [-u user] [-p password]"
     echo "                  [-1 server] [-2 server]"
-    echo "                  [-B cn] [-P password] [-S secret]"
+    echo "                  [-S secret] [-B cn] [-P password]"
     echo "  -n              non-interactive"
     echo "  -v              verbose"
     echo "  -l              lock OpenVPN Administrator User"
     echo "  -a type         Authentication type (default: $auth)"
     echo "  -h host         Host (default: $host)"
-    echo "  -d domain       Domain (default: $domain)"
+    echo "  -s secret-id    OpenVPN Administrator SecretId"
     echo "  -u user         OpenVPN Administrator User (default: $openvpn_user)"
     echo "  -p password     OpenVPN Administrator Password"
-    echo "  -s secret-id    OpenVPN Administrator Password SecretId"
     echo "  -1 server       Primary LDAP Server (default: $ldap_server1)"
     echo "  -2 server       Backup LDAP Server (default: $ldap_server2)"
-    echo "  -B cn           LDAP Bind CN (default: $ldap_bind_cn)"
+    echo "  -S seret-id     LDAP Bind SecretId"
+    echo "  -B cn           LDAP Bind Common Name (default: $ldap_bind_cn)"
     echo "  -P password     LDAP Bind Password"
-    echo "  -S seret-id     LDAP Bind Password SecretId"
 }
 
 console() {
@@ -118,22 +116,21 @@ if [ $(ip2decimal $ldap_server1) -gt $(ip2decimal $ldap_server2) ]; then
     ldap_server2=$t
 fi
 
-while getopts nvla:h:d:u:p:s:1:2:B:P:S:? arg; do
+while getopts nvla:h:s:u:p:1:2:S:B:P:? arg; do
     case $arg in
     n)  interactive=0;;
     v)  ((verbose++));;
     l)  lock=1;;
     a)  auth="$OPTARG";;
     h)  host="$OPTARG";;
-    d)  domain="$OPTARG";;
+    s)  openvpn_secret="$OPTARG";;
     u)  openvpn_user="$OPTARG";;
     p)  openvpn_password="$OPTARG";;
-    s)  openvpn_password_secret="$OPTARG";;
     1)  ldap_server1="$OPTARG";;
     2)  ldap_server2="$OPTARG";;
+    S)  ldap_bind_secret="$OPTARG";;
     B)  ldap_bind_cn="$OPTARG";;
     P)  ldap_bind_password="$OPTARG";;
-    S)  ldap_bind_password_secret="$OPTARG";;
     ?)  usage
         exit 1;;
     esac
@@ -166,31 +163,12 @@ if [ -z $host ]; then
     exit 10
 fi
 
-if [ -z $domain ]; then
-    console ERROR "-d domain missing!"
-    console ERROR "Could not automatically determine domain, and it was not specified as a parameter"
-    exit 12
-fi
-
-if [ -z $openvpn_user ]; then
-    console ERROR "-u user missing!"
-    console ERROR "Could not automatically determine OpenVPN user, and it was not specified as a parameter"
-    exit 14
-else
-    case $openvpn_user in
-      openvpn)
-        ;;
-      *)
-        console ERROR "-u $openvpn_user invalid! Must be openvpn"
-        exit 15;;
-    esac
-fi
-
-if [ -z $openvpn_password ] && [ -z $openvpn_password_secret ]; then
-    console ERROR "-p secret or -s secret missing!"
-    console ERROR "OpenVPN Password must be specified explicitly or as a SecretId when stored in SecretsManager, neither were specified as a parameter"
-    exit 16
-fi
+#if [ -z $openvpn_secret ] ||
+#   [ -z $openvpn_user ] && [ -z $openvpn_password ]; then
+#    console ERROR "-s secret missing or both -u user & -p password missing!"
+#    console ERROR "OpenVPNAS Administrator Secret or both OpenVPNAS Administrator User and Password are required"
+#    exit 14
+#fi
 
 if [ $auth = ldap ]; then
     if [ -z $ldap_server1 ]; then
@@ -205,17 +183,12 @@ if [ $auth = ldap ]; then
         exit 22
     fi
 
-    if [ -z $ldap_bind_cn ]; then
-        console ERROR "-B cn missing!"
-        console ERROR "Could not automatically determine LDAP bind CN, and it was not specified as a parameter"
-        exit 24
-    fi
-
-    if [ -z $ldap_bind_password ] && [ -z $ldap_bind_password_secret ]; then
-        console ERROR "-P password or -S secret missing!"
-        console ERROR "LDAP bind password must be specified explicitly or as a SecretId when stored in SecretsManager, neither were specified as a parameter"
-        exit 26
-    fi
+    #if [ -z $ldap_bind_secret ] ||
+    #   [ -z $ldap_bind_cn ] && [ -z $ldap_bind_password ]; then
+    #    console ERROR "-S secret missing or both -B cn & -P password missing!"
+    #    console ERROR "OpenVPNAS LDAP Bind Common Name Secret or both OpenVPNAS LDAP Bind Common Name and Password are required"
+    #    exit 24
+    #fi
 fi
 
 if [ ! -r $groupsdatfile ]; then
@@ -236,20 +209,28 @@ fi
 
 #  5. Main
 
-if [ ! -z $openvpn_password_secret ]; then
-  console "Obtaining '$openvpn_password_secret' secret from SecretsManager..."
+if [ ! -z $openvpn_secret ]; then
+  console "Obtaining '$openvpn_secret' secret from SecretsManager..."
 
-  openvpn_password=$(aws secretsmanager get-secret-value --secret-id $openvpn_password_secret \
-                                                         --query 'SecretString' \
-                                                         --region $region --output text)
+  openvpn_secret_string=$(aws secretsmanager get-secret-value --secret-id $openvpn_secret \
+                                                              --query 'SecretString' \
+                                                              --region $region --output text)
   RC=$?
 
   if [ $RC = 0 ]; then
-    console "Obtained '$openvpn_password_secret' secret successfully"
+      console "Obtained '$openvpn_secret' secret successfully"
   else
-    console "Could not obtain '$openvpn_password_secret' secret! Error: $RC"
-    exit 99
+      console ERROR "Could not obtain '$openvpn_secret' secret! Error: $RC"
+      exit 99
   fi
+  openvpn_user=$(echo $openvpn_secret_string | sed -n -e 's/^.*"username":"\([a-zA-Z0-9]*\)".*$/\1/p')
+  openvpn_password=$(echo $openvpn_secret_string | sed -n -e 's/^.*"password":"\([a-zA-Z0-9]*\)".*$/\1/p')
+fi
+
+
+if [ $openvpn_user != 'openvpn' ]; then
+    console ERROR "This script does not currently support changing the default OpenVPNAS username from 'openvpn'"
+    exit 98
 fi
 
 
@@ -411,14 +392,32 @@ case $auth in
     privatedomain=$(hostname -d)
     basedn="DC=${privatedomain//./,DC=}"
 
+    if [ ! -z $ldap_bind_secret ]; then
+      console "Obtaining '$ldap_bind_secret' secret from SecretsManager..."
+
+      ldap_bind_secret_string=$(aws secretsmanager get-secret-value --secret-id $ldap_bind_secret \
+                                                                    --query 'SecretString' \
+                                                                    --region $region --output text)
+      RC=$?
+
+      if [ $RC = 0 ]; then
+          console "Obtained '$ldap_bind_secret' secret successfully"
+      else
+          console ERROR "Could not obtain '$ldap_bind_secret' secret! Error: $RC"
+          exit 99
+      fi
+      ldap_bind_cn=$(echo $ldap_bind_secret_string | sed -n -e 's/^.*"username":"\([a-zA-Z0-9]*\)".*$/\1/p')
+      ldap_bind_password=$(echo $ldap_bind_secret_string | sed -n -e 's/^.*"password":"\([a-zA-Z0-9]*\)".*$/\1/p')
+    fi
+
     /usr/local/openvpn_as/scripts/sacli --key "auth.module.type" --value "ldap" ConfigPut
 
     /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.name" --value "$privatedomain" ConfigPut
-    #V /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.name" --value "ActiveDirectory" ConfigPut
+    # /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.name" --value "ActiveDirectory" ConfigPut
     /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.server.0.host" --value "$ldap_server1" ConfigPut
     /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.server.1.host" --value "$ldap_server2" ConfigPut
-    #V /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.server.0.host" --value "hlsuw2caddc01a.c.hlsb.dxcanalytics.com" ConfigPut
-    #V /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.server.1.host" --value "hlsuw2caddc01b.c.hlsb.dxcanalytics.com" ConfigPut
+    # /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.server.0.host" --value "hlsuw2caddc01a.c.hlsb.dxcanalytics.com" ConfigPut
+    # /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.server.1.host" --value "hlsuw2caddc01b.c.hlsb.dxcanalytics.com" ConfigPut
 
     /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.use_ssl" --value "never" ConfigPut
     /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.ssl_verify" --value "never" ConfigPut
@@ -428,8 +427,8 @@ case $auth in
     /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.timeout" --value "4" ConfigPut
 
     /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.bind_dn" --value "CN=$ldap_bind_cn,CN=Users,$basedn" ConfigPut
-    #V /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.bind_dn" --value "CN=OpenVPN Server,CN=Users,$basedn" ConfigPut
-    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.bind_pw" --value "$ldap_password" ConfigPut
+    # /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.bind_dn" --value "CN=OpenVPN Server,CN=Users,$basedn" ConfigPut
+    /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.bind_pw" --value "$ldap_bind_password" ConfigPut
     /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.users_base_dn" --value "$basedn" ConfigPut
     /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.uname_attr" --value "sAMAccountName" ConfigPut
     /usr/local/openvpn_as/scripts/sacli --key "auth.ldap.0.add_req" --value "memberOf=CN=OpenVPN Users,CN=Users,$basedn" ConfigPut

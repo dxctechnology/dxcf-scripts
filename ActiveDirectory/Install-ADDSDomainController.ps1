@@ -7,15 +7,15 @@
     not currently possible directly within cfn-init logic.
 .Parameter DomainName
     Specifies the domain to which the controller is added
+.Parameter SecretId
+    Specifies the Id of a SecretsManager Secret containing the User Name and Password for the user account.
 .Parameter UserName
     Specifies a user account that has permission to add domain controllers to an existing domain.
     The default is 'Admin'.
-.Parameter PasswordSecretId
-    Specifies the Id of a SecretsManager Secret containing the Password for the user account.
 .Parameter Password
     Specifies the password for the user account.
     Avoid using this method if possible - it's more secure to have SecretsManager create and store the password.
-.Parameter SafeModePasswordSecretId
+.Parameter SafeModeSecretId
     Specifies the Id of a SecretsManager Secret containing the Safe Mode Administrator Password.
 .Parameter SafeModePassword
     Specifies the Safe Mode Administrator Password.
@@ -31,16 +31,16 @@ Param(
     [string]$DomainName,
 
     [Parameter(Mandatory=$false)]
-    [string]$UserName = "Admin",
+    [string]$SecretId = "",
 
     [Parameter(Mandatory=$false)]
-    [string]$PasswordSecretId = "",
+    [string]$UserName = "Admin",
 
     [Parameter(Mandatory=$false)]
     [string]$Password = "",
 
     [Parameter(Mandatory=$false)]
-    [string]$SafeModePasswordSecretId = "",
+    [string]$SafeModeSecretId = "",
 
     [Parameter(Mandatory=$false)]
     [string]$SafeModePassword = ""
@@ -52,19 +52,22 @@ Write-CloudFormationHost "Adding Domain Controller to Domain $DomainName"
 Try {
     $ErrorActionPreference = "Stop"
 
-    If ($PasswordSecretId) {
-      $Password = Get-SECSecretValue -SecretId $PasswordSecretId | Select -ExpandProperty SecretString
+    If ($SecretId) {
+      $SecretString = Get-SECSecretValue -SecretId $SecretId | Select -ExpandProperty SecretString
+      $UserName = $SecretString | ConvertFrom-Json | Select -ExpandProperty username
+      $Password = $SecretString | ConvertFrom-Json | Select -ExpandProperty password
     }
 
-    If (-Not $Password) {
-      Throw "Password not found"
+    If (-Not $UserName -Or -Not $Password) {
+      Throw "UserName and/or Password not found"
     }
 
     $SecurePassword = ConvertTo-SecureString "$Password" -AsPlainText -Force
     $Credential = New-Object System.Management.Automation.PSCredential("$UserName@$DomainName", $SecurePassword)
 
-    If ($SafeModePasswordSecretId) {
-      $SafeModePassword = Get-SECSecretValue -SecretId $SafeModePasswordSecretId | Select -ExpandProperty SecretString
+    If ($SafeModeSecretId) {
+      $SafeModeSecretString = Get-SECSecretValue -SecretId $SafeModeSecretId | Select -ExpandProperty SecretString
+      $SafeModePassword = $SafeModeSecretString | ConvertFrom-Json | Select -ExpandProperty password
     }
 
     If (-Not $SafeModePassword) {

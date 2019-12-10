@@ -8,15 +8,15 @@
     Users can optionally be added to additional groups.
 .Parameter DomainName
     Specifies the domain for the user account.
+.Parameter SecretId
+    Specifies the Id of a SecretsManager Secret containing the User Name and Password for the user account.
 .Parameter UserName
     Specifies a user account that has permission to add users to the domain.
     The default is 'Admin'.
-.Parameter PasswordSecretId
-    Specifies the Id of a SecretsManager Secret containing the Password for the user account.
 .Parameter Password
     Specifies the password for the user account.
     Avoid using this method if possible - it's more secure to have SecretsManager create and store the password.
-.Parameter EncryptionKeySecretId
+.Parameter EncryptionSecretId
     Specifies the Id of a SecretsManager Secret containing the encryption key used to encrypt user passwords in the CSV file.
 .Parameter EncryptionKey
     Specifies the encryption key used to encrypt user passwords in the CSV file.
@@ -29,21 +29,21 @@
     This creates Users in the correct OU.
 .Example
     Configure-Users -DomainName m1.dxc-ap.com `
-                    -PasswordSecretId Production-DirectoryService-AdminPassword `
-                    -EncryptionKeySecretId Production-DirectoryService-EncryptionKey
-    Creates Users using the default ./Users.csv file using a password stored in SecretsManager.
+                    -SecretId Production-DirectoryService-Administrator `
+                    -EncryptionSecretId Production-DirectoryService-Encryption
+    Creates Users using the default ./Users.csv file using an encryption key stored in SecretsManager.
 .Example
     Configure-Users -DomainName m1.dxc-ap.com `
                     -UserName Admin -Password <Password> -EncryptionKey <Key> `
                     -UsersPath 'C:\cfn\temp\CustomUsers.csv'
-    Creates Users using a custom CSV file using an explicitly passed password.
+    Creates Users using a custom CSV file using an explicitly passed encryption key.
 .Example
     Configure-Users -DomainName m1.dxc-ap.com `
-                    -PasswordSecretId Production-DirectoryService-AdminPassword `
-                    -EncryptionKeySecretId Production-DirectoryService-EncryptionKey `
+                    -SecretId Production-DirectoryService-Administrator `
+                    -EncryptionSecretId Production-DirectoryService-Encryption `
                     -UsersPath 'C:\cfn\temp\CustomUsers.csv' `
                     -DirectoryService
-    Creates Users using a custom CSV file in the OU required by the AWS DirectoryService using a password stored in SecretsManager.
+    Creates Users using a custom CSV file in the OU required by the AWS DirectoryService using an encryption key stored in SecretsManager.
 .Notes
        Author: Michael Crawford
     Copyright: 2019 by DXC.technology
@@ -57,16 +57,16 @@ Param (
     [string]$DomainName,
 
     [Parameter(Mandatory=$false)]
-    [string]$UserName = "Admin",
+    [string]$SecretId = "",
 
     [Parameter(Mandatory=$false)]
-    [string]$PasswordSecretId = "",
+    [string]$UserName = "Admin",
 
     [Parameter(Mandatory=$false)]
     [string]$Password = "",
 
     [Parameter(Mandatory=$false)]
-    [string]$EncryptionKeySecretId = "",
+    [string]$EncryptionSecretId = "",
 
     [Parameter(Mandatory=$false)]
     [string]$EncryptionKey = "",
@@ -82,19 +82,22 @@ Try {
 
     $MaxFailedUsers = 4
 
-    If ($PasswordSecretId) {
-      $Password = Get-SECSecretValue -SecretId $PasswordSecretId | Select -ExpandProperty SecretString
+    If ($SecretId) {
+      $SecretString = Get-SECSecretValue -SecretId $SecretId | Select -ExpandProperty SecretString
+      $UserName = $SecretString | ConvertFrom-Json | Select -ExpandProperty username
+      $Password = $SecretString | ConvertFrom-Json | Select -ExpandProperty password
     }
 
-    If (-Not $Password) {
-      Throw "Password not found"
+    If (-Not $UserName -Or -Not $Password) {
+      Throw "UserName and/or Password not found"
     }
 
     $SecurePassword = ConvertTo-SecureString -String "$Password" -AsPlainText -Force
     $Credential = New-Object System.Management.Automation.PSCredential("$UserName@$DomainName", $SecurePassword)
 
-    If ($EncryptionKeySecretId) {
-      $EncryptionKey = Get-SECSecretValue -SecretId $EncryptionKeySecretId | Select -ExpandProperty SecretString
+    If ($EncryptionSecretId) {
+      $EncryptionSecretString = Get-SECSecretValue -SecretId $EncryptionSecretId | Select -ExpandProperty SecretString
+      $EncryptionKey = $EncryptionSecretString | ConvertFrom-Json | Select -ExpandProperty key
     }
 
     If (-Not $EncryptionKey) {

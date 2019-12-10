@@ -9,7 +9,7 @@
     Specifies the domain to use for the initial domain of the forest
 .Parameter DomainNetbiosName
     Specifies the NetBIOS domain for the initial domain of the forest
-.Parameter SafeModePasswordSecretId
+.Parameter SafeModeSecretId
     Specifies the Id of a SecretsManager Secret containing the Safe Mode Administrator Password.
 .Parameter SafeModePassword
     Specifies the Safe Mode Administrator Password.
@@ -28,7 +28,7 @@ Param(
     [string]$DomainNetbiosName,
 
     [Parameter(Mandatory=$false)]
-    [string]$SafeModePasswordSecretId = "",
+    [string]$SafeModeSecretId = "",
 
     [Parameter(Mandatory=$false)]
     [string]$SafeModePassword = ""
@@ -40,8 +40,9 @@ Write-CloudFormationHost "Creating a new Forest with Domain $DomainName and NetB
 Try {
     $ErrorActionPreference = "Stop"
 
-    If ($SafeModePasswordSecretId) {
-      $SafeModePassword = Get-SECSecretValue -SecretId $SafeModePasswordSecretId | Select -ExpandProperty SecretString
+    If ($SafeModeSecretId) {
+      $SafeModeSecretString = Get-SECSecretValue -SecretId $SafeModeSecretId | Select -ExpandProperty SecretString
+      $SafeModePassword = $SafeModeSecretString | ConvertFrom-Json | Select -ExpandProperty password
     }
 
     If (-Not $SafeModePassword) {
